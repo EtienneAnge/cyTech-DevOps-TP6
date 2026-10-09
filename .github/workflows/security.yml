@@ -22,7 +22,7 @@ jobs:
         run: python -m pip install pip-audit
 
       - name: pip-audit execution
-        run: pip-audit -r requirements.txt
+        run: pip-audit -r app/requirements.txt
 
         
   gitleaks:
@@ -85,12 +85,12 @@ jobs:
 
       - name: Build an image from Dockerfile
         run: |
-          docker build -t docker.io/my-organization/my-app:${{ github.sha }} .
+          docker build -t my-app:${{ github.sha }} app
 
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@7b7aa264d83dc58691451798b4d117d53d21edfe
         with:
-          image-ref: 'docker.io/my-organization/my-app:${{ github.sha }}'
+          image-ref: 'my-app:${{ github.sha }}'
           format: 'template'
           template: '@/contrib/sarif.tpl'
           output: 'trivy-results.sarif'
