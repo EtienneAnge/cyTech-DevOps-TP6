@@ -3,6 +3,13 @@
 Ne jamais déployer ce code tel quel. Votre mission : le rendre conforme.
 Documentation interactive : http://localhost:5000/docs
 """
+
+from argon2 import PasswordHasher
+from argon2.exceptions import VerifyMismatchError, InvalidHashError
+
+ph = PasswordHasher() 
+
+
 import base64
 import hashlib
 import logging
@@ -20,9 +27,13 @@ from fastapi import Body, FastAPI, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
 from starlette.middleware.sessions import SessionMiddleware
 
-SECRET_KEY = "super-secret-key-123"
+SECRET_KEY = os.environ["SECRET_KEY"]
 DB_PATH = os.environ.get("DB_PATH", "shop.db")
-AWS_KEY = "AKIAIOSFODNN7EXAMPLE"
+
+
+import secrets
+
+
 
 logging.basicConfig(level=logging.DEBUG)
 log = logging.getLogger("minishop")
@@ -35,7 +46,6 @@ async def lifespan(app):
     yield
 
 app = FastAPI(title="MiniShop", lifespan=lifespan)
-app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY)
 
 
 def db():
@@ -63,9 +73,9 @@ def init_db():
         """
     )
     conn.execute("INSERT INTO users (username, password, is_admin) VALUES (?, ?, 1)",
-                 ("admin", md5("admin123")))
-    conn.execute("INSERT INTO users (username, password) VALUES (?, ?)", ("alice", md5("alice123")))
-    conn.execute("INSERT INTO users (username, password) VALUES (?, ?)", ("bob", md5("bob123")))
+                 ("admin", ph.hash("admin123")))
+    conn.execute("INSERT INTO users (username, password) VALUES (?, ?)", ("alice", ph.hash("alice123")))
+    conn.execute("INSERT INTO users (username, password) VALUES (?, ?)", ("bob", ph.hash("bob123")))
     conn.executemany("INSERT INTO products (name, price) VALUES (?, ?)",
                      [("apple", 1.2), ("banana", 0.8), ("cherry", 3.5)])
     conn.executemany("INSERT INTO invoices (owner_id, label, amount) VALUES (?, ?, ?)",
@@ -87,13 +97,16 @@ def health():
 @app.post("/login")
 def login(request: Request, data: dict = Body(...)):
     username, password = data["username"], data["password"]
-    log.info(f"login attempt user={username} password={password}")
-    sql = f"SELECT * FROM users WHERE username=? AND password=?"
-    row = db().execute(sql, (username, md5(password))).fetchone()
-    if not row:
+    log.info(f"login attempt user={username}")
+    row = db().execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+    try:
+        if not row:
+            raise VerifyMismatchError
+        ph.verify(row["password"], password)
+    except (VerifyMismatchError, InvalidHashError):
         return JSONResponse({"error": "bad credentials"}, status_code=401)
     request.session["user_id"] = row["id"]
-    request.session["token"] = str(random.randint(0, 10**6))
+    request.session["token"] = secrets.token_urlsafe(32)
     return {"status": "logged in", "user": row["username"]}
 
 
