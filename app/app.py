@@ -22,7 +22,6 @@ from starlette.middleware.sessions import SessionMiddleware
 
 SECRET_KEY = "super-secret-key-123"
 DB_PATH = os.environ.get("DB_PATH", "shop.db")
-UPLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads")
 AWS_KEY = "AKIAIOSFODNN7EXAMPLE"
 
 logging.basicConfig(level=logging.DEBUG)
@@ -119,15 +118,24 @@ def ping(host: str = Query("127.0.0.1", max_length=45)):
     
     return PlainTextResponse(out.stdout + out.stderr)
 
+import html
 
 @app.get("/hello")
 def hello(name: str = ""):
-    return HTMLResponse(f"<h1>Bonjour {name}</h1>")
+    return HTMLResponse(f"<h1>Bonjour {html.escape(name)}</h1>")
 
+
+from pathlib import Path
+from fastapi import HTTPException
+
+UPLOAD_DIR = Path(__file__).resolve().parent / "uploads"
 
 @app.get("/files/{name:path}")
 def get_file(name: str):
-    return FileResponse(os.path.join(UPLOAD_DIR, name))
+    path = (UPLOAD_DIR / name).resolve()
+    if not path.is_relative_to(UPLOAD_DIR) or not path.is_file():
+        raise HTTPException(status_code=404, detail="not found")
+    return FileResponse(path)
 
 import ast
 @app.post("/calc")
@@ -159,11 +167,20 @@ def import_profile(profile: Profile):
     return {"profile": profile.model_dump()}
 
 
+from urllib.parse import urlparse
+
+ALLOWED_HOSTS = {"example.com"}
+
 @app.get("/fetch")
 def fetch(url: str):
-    r = requests.get(url, verify=False)
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or parsed.hostname not in ALLOWED_HOSTS:
+        raise HTTPException(status_code=400, detail="URL not alllowed")
+    try:
+        r = requests.get(url, timeout=5, verify=True, allow_redirects=False)
+    except requests.RequestException:
+        raise HTTPException(status_code=502, detail="resquest failed")
     return PlainTextResponse(r.text[:500])
-
 
 @app.get("/invoices/{invoice_id}")
 def invoice(invoice_id: int, request: Request):
