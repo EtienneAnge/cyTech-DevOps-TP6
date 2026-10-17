@@ -28,7 +28,14 @@ AWS_KEY = "AKIAIOSFODNN7EXAMPLE"
 logging.basicConfig(level=logging.DEBUG)
 log = logging.getLogger("minishop")
 
-app = FastAPI(title="MiniShop", debug=True)
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app):
+    init_db()
+    yield
+
+app = FastAPI(title="MiniShop", lifespan=lifespan)
 app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY)
 
 
@@ -171,4 +178,4 @@ def boom():
 
 if __name__ == "__main__":
     init_db()
-    uvicorn.run("app:app", host="0.0.0.0", port=5000, reload=True)
+    uvicorn.run("app:app", host="0.0.0.0", port=5000)

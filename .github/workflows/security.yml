@@ -30,17 +30,11 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          fetch-depth: 0
+          fetch-depth: 1
 
-      - name: gitleaks installation
-        run: |
-          git clone --depth 1 https://github.com/gitleaks/gitleaks.git /tmp/gitleaks
-          cd /tmp/gitleaks
-          make build
-          echo "/tmp/gitleaks" >> "$GITHUB_PATH"
-
-      - name: gitleaks check
-        run: gitleaks git . -v
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   bandit:
     permissions:
@@ -55,7 +49,6 @@ jobs:
         uses: shundor/python-bandit-scan@ab1d87dfccc5a0ffab88be3aaac6ffe35c10d6cd
         with: # optional arguments
           # exit with 0, even with results found
-          exit_zero: true # optional, default is DEFAULT
           # Github token of the repository (automatically created by Github)
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # Needed to get PR information.
           # File or directory to run bandit on
@@ -85,7 +78,7 @@ jobs:
 
       - name: Build an image from Dockerfile
         run: |
-          docker build -t my-app:${{ github.sha }} app
+          docker build -t my-app:${{ github.sha }} app 
 
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@7b7aa264d83dc58691451798b4d117d53d21edfe

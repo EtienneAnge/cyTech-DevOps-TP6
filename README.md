@@ -11,7 +11,8 @@ Cours 6 – Écrire du code Python sécurisé · durée indicative : 3 h · en b
 ```bash
 cd "TP06-Secure-Code"
 python -m venv .venv && source .venv/bin/activate    # Windows : .venv\Scripts\activate
-pip install -r app/requirements.txt pytest bandit pip-audit
+pip install --require-hashes -r app/requirements.txt
+pip install -r pytest bandit pip-audit
 cd app && python app.py                               # http://localhost:5000/docs
 cd .. && pytest -q tests                              # la plupart des tests sont ROUGES
 ```
