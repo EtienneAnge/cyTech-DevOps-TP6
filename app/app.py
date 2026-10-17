@@ -89,8 +89,8 @@ def health():
 def login(request: Request, data: dict = Body(...)):
     username, password = data["username"], data["password"]
     log.info(f"login attempt user={username} password={password}")
-    sql = f"SELECT * FROM users WHERE username='{username}' AND password='{md5(password)}'"
-    row = db().execute(sql).fetchone()
+    sql = f"SELECT * FROM users WHERE username=? AND password=?"
+    row = db().execute(sql, (username, md5(password))).fetchone()
     if not row:
         return JSONResponse({"error": "bad credentials"}, status_code=401)
     request.session["user_id"] = row["id"]
@@ -100,13 +100,23 @@ def login(request: Request, data: dict = Body(...)):
 
 @app.get("/search")
 def search(q: str = ""):
-    sql = f"SELECT id, name, price FROM products WHERE name LIKE '%{q}%'"
-    return [dict(r) for r in db().execute(sql).fetchall()]
+    sql = f"SELECT id, name, price FROM products WHERE name LIKE ?"
+    return [dict(r) for r in db().execute(sql, (f"%{q}%",)).fetchall()]
 
-
+import ipaddress
+from fastapi import HTTPException, Query
 @app.get("/ping")
-def ping(host: str = "127.0.0.1"):
-    out = subprocess.run(f"ping -c 1 {host}", shell=True, capture_output=True, text=True)
+def ping(host: str = Query("127.0.0.1", max_length=45)):
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid IP")
+    
+    try:
+        out = subprocess.run(["ping", "-c", "1", f"{host}"],timeout=5, capture_output=True, text=True)
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="timeout")
+    
     return PlainTextResponse(out.stdout + out.stderr)
 
 
@@ -119,22 +129,34 @@ def hello(name: str = ""):
 def get_file(name: str):
     return FileResponse(os.path.join(UPLOAD_DIR, name))
 
-
+import ast
 @app.post("/calc")
 def calc(data: dict = Body(...)):
-    return {"result": str(eval(data["expr"]))}
+    try:
+        result = ast.literal_eval(data["expr"])
+    except Exception:
+        raise HTTPException(status_code=400, detail="invalid")
+    
+    return {
+        "result": str(result)
+        }
 
 
 @app.post("/import-yaml")
 async def import_yaml(request: Request):
-    cfg = yaml.load(await request.body(), Loader=yaml.Loader)
+    cfg = yaml.safe_load(await request.body(), Loader=yaml.Loader)
     return {"keys": list(cfg.keys()) if isinstance(cfg, dict) else str(type(cfg))}
 
+from pydantic import BaseModel, Field, ConfigDict
+class Profile(BaseModel):
+    model_config = ConfigDict(extra="forbid")   # refuse les champs inconnus
+    username: str = Field(min_length=1, max_length=64)
+    email: str | None = Field(default=None, max_length=254)
+    bio: str | None = Field(default=None, max_length=500)
 
 @app.post("/import-profile")
-async def import_profile(request: Request):
-    profile = pickle.loads(base64.b64decode(await request.body()))
-    return {"profile": str(profile)}
+def import_profile(profile: Profile):
+    return {"profile": profile.model_dump()}
 
 
 @app.get("/fetch")
