@@ -18,12 +18,11 @@ import pickle
 import random
 import sqlite3
 import subprocess
-import traceback
 
 import requests
 import uvicorn
 import yaml
-from fastapi import Body, FastAPI, Request
+from fastapi import Body, FastAPI, Request, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -33,19 +32,42 @@ DB_PATH = os.environ.get("DB_PATH", "shop.db")
 
 import secrets
 
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 
-logging.basicConfig(level=logging.DEBUG)
-log = logging.getLogger("minishop")
+DEV = os.environ.get("APP_ENV") == "dev"
 
 from contextlib import asynccontextmanager
+
 
 @asynccontextmanager
 async def lifespan(app):
     init_db()
     yield
 
-app = FastAPI(title="MiniShop", lifespan=lifespan)
+app = FastAPI(
+    title="MiniShop",
+    debug=False,
+    lifespan=lifespan,
+    docs_url="/docs" if DEV else None,
+    redoc_url=None,
+    openapi_url="/openapi.json" if DEV else None,
+)
+
+
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+logging.basicConfig(level=logging.DEBUG)
+log = logging.getLogger("minishop")
+
+
+
+
 
 
 def db():
@@ -86,8 +108,8 @@ def init_db():
 
 @app.exception_handler(Exception)
 async def handle_error(request: Request, exc: Exception):
-    return HTMLResponse("<pre>" + traceback.format_exc() + "</pre>", status_code=500)
-
+    log.exception("unhandled error on %s %s", request.method, request.url.path)
+    return JSONResponse({"error": "internal server error"}, status_code=500)
 
 @app.get("/health")
 def health():
@@ -95,6 +117,7 @@ def health():
 
 
 @app.post("/login")
+@limiter.limit("5/minute")
 def login(request: Request, data: dict = Body(...)):
     username, password = data["username"], data["password"]
     log.info(f"login attempt user={username}")
@@ -116,7 +139,6 @@ def search(q: str = ""):
     return [dict(r) for r in db().execute(sql, (f"%{q}%",)).fetchall()]
 
 import ipaddress
-from fastapi import HTTPException, Query
 @app.get("/ping")
 def ping(host: str = Query("127.0.0.1", max_length=45)):
     try:
@@ -139,7 +161,6 @@ def hello(name: str = ""):
 
 
 from pathlib import Path
-from fastapi import HTTPException
 
 UPLOAD_DIR = Path(__file__).resolve().parent / "uploads"
 
@@ -199,29 +220,53 @@ def fetch(url: str):
 def invoice(invoice_id: int, request: Request):
     if "user_id" not in request.session:
         return JSONResponse({"error": "login required"}, status_code=401)
-    row = db().execute("SELECT * FROM invoices WHERE id = ?", (invoice_id,)).fetchone()
+    row = db().execute("SELECT * FROM invoices WHERE id = ? AND owner_id = ?", (invoice_id,request.session.get("user_id"))).fetchone()
     if not row:
         return JSONResponse({"error": "not found"}, status_code=404)
     return dict(row)
 
+ROLE_PERMISSIONS = {
+    "admin": {"user:list", "user:delete"},
+    "user": set(),
+}
+
+def current_user(request: Request):
+    user_id = request.session.get("user_id")
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="login required")
+    row = db().execute("SELECT id, username, is_admin FROM users WHERE id = ?", (user_id,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=401, detail="login required")
+    return row
+
+def require(permission: str):
+    def checker(user=Depends(current_user)):
+        role = "admin" if user["is_admin"] else "user"
+        if permission not in ROLE_PERMISSIONS.get(role, set()):
+            raise HTTPException(status_code=403, detail="forbidden")
+        return user
+    return checker
 
 @app.get("/admin/users")
-def admin_users(request: Request):
-    if "user_id" not in request.session:
-        return JSONResponse({"error": "login required"}, status_code=401)
+def admin_users(user=Depends(require("user:list"))):
     rows = db().execute("SELECT id, username, is_admin FROM users").fetchall()
     return [dict(r) for r in rows]
 
-
 @app.delete("/users/{user_id}")
-def delete_user(user_id: int, request: Request):
-    if "user_id" not in request.session:
-        return JSONResponse({"error": "login required"}, status_code=401)
+def delete_user(user_id: int, user=Depends(require("user:delete"))):
     conn = db()
     conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
     conn.commit()
     return {"deleted": user_id}
 
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["Content-Security-Policy"] = "default-src 'self'"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    response.headers["X-Frame-Options"] = "DENY"
+    return response
 
 @app.get("/boom")
 def boom():
@@ -229,5 +274,4 @@ def boom():
 
 
 if __name__ == "__main__":
-    init_db()
-    uvicorn.run("app:app", host="0.0.0.0", port=5000)
+    uvicorn.run("app:app", host="127.0.0.1", port=5000)
