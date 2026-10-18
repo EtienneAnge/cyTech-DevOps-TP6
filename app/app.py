@@ -10,12 +10,10 @@ from argon2.exceptions import VerifyMismatchError, InvalidHashError
 ph = PasswordHasher() 
 
 
-import base64
-import hashlib
+
 import logging
 import os
-import pickle
-import random
+
 import sqlite3
 import subprocess
 
@@ -55,7 +53,7 @@ app = FastAPI(
     redoc_url=None,
     openapi_url="/openapi.json" if DEV else None,
 )
-
+app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY, https_only=True, same_site="lax")
 
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
@@ -76,8 +74,7 @@ def db():
     return conn
 
 
-def md5(value):
-    return hashlib.md5(value.encode()).hexdigest()
+
 
 
 def init_db():
@@ -117,7 +114,7 @@ def health():
 
 
 @app.post("/login")
-@limiter.limit("5/minute")
+@limiter.limit("20/minute")
 def login(request: Request, data: dict = Body(...)):
     username, password = data["username"], data["password"]
     log.info(f"login attempt user={username}")
@@ -135,7 +132,7 @@ def login(request: Request, data: dict = Body(...)):
 
 @app.get("/search")
 def search(q: str = ""):
-    sql = f"SELECT id, name, price FROM products WHERE name LIKE ?"
+    sql = "SELECT id, name, price FROM products WHERE name LIKE ?"
     return [dict(r) for r in db().execute(sql, (f"%{q}%",)).fetchall()]
 
 import ipaddress
@@ -147,7 +144,7 @@ def ping(host: str = Query("127.0.0.1", max_length=45)):
         raise HTTPException(status_code=400, detail="invalid IP")
     
     try:
-        out = subprocess.run(["ping", "-c", "1", f"{host}"],timeout=5, capture_output=True, text=True)
+        out = subprocess.run(["ping", "-c", "1", "--", str(ip)], timeout=5, capture_output=True, text=True)
     except subprocess.TimeoutExpired:
         raise HTTPException(status_code=504, detail="timeout")
     
@@ -186,8 +183,11 @@ def calc(data: dict = Body(...)):
 
 @app.post("/import-yaml")
 async def import_yaml(request: Request):
-    cfg = yaml.safe_load(await request.body(), Loader=yaml.Loader)
-    return {"keys": list(cfg.keys()) if isinstance(cfg, dict) else str(type(cfg))}
+    try:
+        cfg = yaml.safe_load(await request.body())
+    except yaml.YAMLError:
+        raise HTTPException(status_code=400, detail="invalid YAML")
+    return {"keys": [str(k) for k in cfg.keys()] if isinstance(cfg, dict) else str(type(cfg))}
 
 from pydantic import BaseModel, Field, ConfigDict
 class Profile(BaseModel):
